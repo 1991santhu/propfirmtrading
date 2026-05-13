@@ -23,6 +23,7 @@ class Settings:
         self.max_daily_trades = int(os.environ["MAX_DAILY_TRADES"])
         self.close_hour_est = int(os.environ["CLOSE_HOUR_EST"])
         self.close_minute_est = int(os.environ["CLOSE_MINUTE_EST"])
+        self.exit_strategy = os.environ.get("EXIT_STRATEGY", "fixed_2r")
 
         if self.tradovate_env == "live":
             self.base_url = "https://live.tradovateapi.com/v1"
