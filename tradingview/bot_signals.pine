@@ -1,0 +1,89 @@
+//@version=5
+strategy("PropFirm Bot Signals [MNQ]",
+    overlay              = true,
+    default_qty_type     = strategy.fixed,
+    default_qty_value    = 3,
+    commission_type      = strategy.commission.cash_per_contract,
+    commission_value     = 0.50,
+    slippage             = 2,
+    initial_capital      = 50000,
+    currency             = currency.USD)
+
+// ── Inputs ──────────────────────────────────────────────────────────────────
+stopPoints    = input.int(30,             "Stop Loss (points)",    group="Risk")
+webhookSecret = input.string("change-me", "Webhook Secret",        group="Alerts")
+symbol        = input.string("MNQM5",     "Symbol",                group="Alerts")
+showClouds    = input.bool(true,          "Show EMA Clouds",       group="Display")
+
+// ── EMA Clouds ───────────────────────────────────────────────────────────────
+src   = hl2
+ema8  = ta.ema(src, 8)
+ema9  = ta.ema(src, 9)
+ema5  = ta.ema(src, 5)
+ema12 = ta.ema(src, 12)
+
+cloud1Green = ema8 > ema9
+cloud2Green = ema5 > ema12
+
+bothGreen = cloud1Green and cloud2Green
+bothRed   = not cloud1Green and not cloud2Green
+
+// ── Signals (transition bars only) ──────────────────────────────────────────
+longSignal  = bothGreen and not bothGreen[1]
+shortSignal = bothRed   and not bothRed[1]
+
+// ── RTH Filter ───────────────────────────────────────────────────────────────
+inRTH = not na(time("5", "0930-1620", "America/New_York"))
+
+// ── Strategy Entries & Exits ─────────────────────────────────────────────────
+var float entryPrice = na
+
+if longSignal and inRTH and strategy.position_size == 0
+    strategy.entry("Long", strategy.long)
+    entryPrice := close
+    strategy.exit("Long Exit", "Long",
+        stop         = entryPrice - stopPoints,
+        limit        = entryPrice + stopPoints * 2,
+        trail_price  = entryPrice + stopPoints,
+        trail_offset = stopPoints)
+
+if shortSignal and inRTH and strategy.position_size == 0
+    strategy.entry("Short", strategy.short)
+    entryPrice := close
+    strategy.exit("Short Exit", "Short",
+        stop         = entryPrice + stopPoints,
+        limit        = entryPrice - stopPoints * 2,
+        trail_price  = entryPrice - stopPoints,
+        trail_offset = stopPoints)
+
+// Force close at 4:30 PM EST (EOD rule)
+eodClose = not na(time("5", "1630-1631", "America/New_York"))
+if eodClose and strategy.position_size != 0
+    strategy.close_all("EOD Close")
+
+// ── Alerts (for live webhook bot) ────────────────────────────────────────────
+alertcondition(longSignal and inRTH,
+    title   = "Long Signal",
+    message = '{"signal":"long","symbol":"' + symbol + '","price":{{close}},"secret":"' + webhookSecret + '"}')
+
+alertcondition(shortSignal and inRTH,
+    title   = "Short Signal",
+    message = '{"signal":"short","symbol":"' + symbol + '","price":{{close}},"secret":"' + webhookSecret + '"}')
+
+// ── Visual ───────────────────────────────────────────────────────────────────
+// EMA cloud fills
+p8  = plot(showClouds ? ema8  : na, color=color.new(color.green, 80), title="EMA8")
+p9  = plot(showClouds ? ema9  : na, color=color.new(color.green, 80), title="EMA9")
+p5  = plot(showClouds ? ema5  : na, color=color.new(color.blue,  80), title="EMA5")
+p12 = plot(showClouds ? ema12 : na, color=color.new(color.blue,  80), title="EMA12")
+
+cloud1Color = cloud1Green ? color.new(color.green, 60) : color.new(color.red, 60)
+cloud2Color = cloud2Green ? color.new(color.blue,  70) : color.new(color.orange, 70)
+fill(p8,  p9,  color=cloud1Color, title="Cloud1")
+fill(p5,  p12, color=cloud2Color, title="Cloud2")
+
+// Signal arrows
+plotshape(longSignal  and inRTH, style=shape.triangleup,   location=location.belowbar,
+    color=color.green, size=size.normal, title="Long Entry")
+plotshape(shortSignal and inRTH, style=shape.triangledown, location=location.abovebar,
+    color=color.red,   size=size.normal, title="Short Entry")
