@@ -11,3 +11,4 @@ respx==0.21.1
 pydantic==2.13.4
 pandas>=2.2.2
 numpy>=1.26.4
+yfinance==0.2.54

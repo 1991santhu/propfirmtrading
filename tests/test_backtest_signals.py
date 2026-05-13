@@ -52,3 +52,22 @@ def test_signal_columns_present():
     for col in ["ema8", "ema9", "ema5", "ema12", "cloud1_green", "cloud2_green",
                 "both_green", "both_red", "long_signal", "short_signal"]:
         assert col in df.columns
+
+def test_load_csv_roundtrip(tmp_path):
+    """CSV written by download.py can be read by load_csv()."""
+    from backtest.signals import load_csv
+    import pandas as pd
+
+    # Write a minimal CSV matching download.py output format
+    idx = pd.date_range("2024-01-02 09:30", periods=5, freq="5min")
+    df = pd.DataFrame({
+        "open": [100.0]*5, "high": [101.0]*5,
+        "low": [99.0]*5, "close": [100.5]*5, "volume": [100]*5
+    }, index=idx)
+    df.index.name = "time"
+    csv_path = tmp_path / "test.csv"
+    df.to_csv(csv_path)
+
+    loaded = load_csv(str(csv_path))
+    assert list(loaded.columns) == ["open", "high", "low", "close", "volume"]
+    assert len(loaded) == 5
