@@ -10,8 +10,8 @@ class KLAllCloudsStrategy(BaseStrategy):
         all_red   = df['both_red']   & ~df['cloud3_green']
         return self._level_break_signals(
             df,
-            long_levels=['orh', 'pdh', 'pmh'],
-            short_levels=['orl', 'pdl', 'pml'],
+            long_levels=['orh', 'pdh', 'pmh', 'pdc'],
+            short_levels=['orl', 'pdl', 'pml', 'pdc'],
             long_filter=all_green,
             short_filter=all_red,
             reentry=reentry,

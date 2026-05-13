@@ -12,8 +12,8 @@ class CloudAtLevelStrategy(BaseStrategy):
         df['long_signal']  = False
         df['short_signal'] = False
 
-        long_levels  = ['orh', 'pdh', 'pmh']
-        short_levels = ['orl', 'pdl', 'pml']
+        long_levels  = ['orh', 'pdh', 'pmh', 'pdc']
+        short_levels = ['orl', 'pdl', 'pml', 'pdc']
 
         # Cloud 1+2 transition signals
         cloud_long  = df['both_green'] & ~df['both_green'].shift(1).fillna(False)

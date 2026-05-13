@@ -35,10 +35,11 @@ def simulate_trades(
     point_value: float = 2.0,       # $2 per point per MNQ contract
     max_daily_losses: int = 2,
     max_daily_trades: int = 5,
+    rr_ratio: float = 2.0,          # R:R multiplier for take profit
 ) -> tuple[List[Trade], List[DayStats]]:
     """
     Simulate all trades from signal dataframe.
-    Uses fixed_2r exit: stop at ±stop_points, BE at ±stop_points, TP at ±stop_points*2.
+    Uses fixed exit: stop at ±stop_points, BE at ±stop_points (1R), TP at ±stop_points*rr_ratio.
 
     Returns (trades, day_stats).
     """
@@ -62,10 +63,10 @@ def simulate_trades(
             if in_position:
                 if side == "long":
                     current_stop = entry_price if be_moved else entry_price - stop_points
-                    tp_price = entry_price + stop_points * 2
-                    be_trigger = entry_price + stop_points
+                    tp_price = entry_price + stop_points * rr_ratio
+                    be_trigger = entry_price + stop_points * 1.0
 
-                    # Check 2R take profit first (use high)
+                    # Check TP first (use high)
                     if row["high"] >= tp_price:
                         exit_price = tp_price
                         pnl = (exit_price - entry_price) * contracts * point_value
@@ -98,8 +99,8 @@ def simulate_trades(
 
                 else:  # short
                     current_stop = entry_price if be_moved else entry_price + stop_points
-                    tp_price = entry_price - stop_points * 2
-                    be_trigger = entry_price - stop_points
+                    tp_price = entry_price - stop_points * rr_ratio
+                    be_trigger = entry_price - stop_points * 1.0
 
                     if row["low"] <= tp_price:
                         exit_price = tp_price

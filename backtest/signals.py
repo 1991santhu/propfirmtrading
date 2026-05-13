@@ -31,7 +31,7 @@ def add_key_levels(df: pd.DataFrame) -> pd.DataFrame:
     - pml: Pre-Market Low (4:00-9:30 AM low of current day)
     """
     df = df.copy()
-    for col in ['orh', 'orl', 'pdh', 'pdl', 'pmh', 'pml']:
+    for col in ['orh', 'orl', 'pdh', 'pdl', 'pmh', 'pml', 'pdc']:
         df[col] = np.nan
 
     df['_date'] = df.index.date
@@ -39,6 +39,7 @@ def add_key_levels(df: pd.DataFrame) -> pd.DataFrame:
 
     prev_rth_high = None
     prev_rth_low = None
+    prev_rth_close = None
 
     for date in dates:
         day_mask = df['_date'] == date
@@ -80,16 +81,18 @@ def add_key_levels(df: pd.DataFrame) -> pd.DataFrame:
         if prev_rth_high is not None:
             df.loc[rth_mask, 'pdh'] = prev_rth_high
             df.loc[rth_mask, 'pdl'] = prev_rth_low
+            df.loc[rth_mask, 'pdc'] = prev_rth_close
 
         # Pre-market levels (valid all RTH)
         if pm_mask.any():
             df.loc[rth_mask, 'pmh'] = df.loc[pm_mask, 'high'].max()
             df.loc[rth_mask, 'pml'] = df.loc[pm_mask, 'low'].min()
 
-        # Save RTH high/low for next day
+        # Save RTH high/low/close for next day
         if rth_mask.any():
-            prev_rth_high = df.loc[rth_mask, 'high'].max()
-            prev_rth_low  = df.loc[rth_mask, 'low'].min()
+            prev_rth_high  = df.loc[rth_mask, 'high'].max()
+            prev_rth_low   = df.loc[rth_mask, 'low'].min()
+            prev_rth_close = df.loc[rth_mask, 'close'].iloc[-1]
 
     df = df.drop(columns=['_date'])
     return df

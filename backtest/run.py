@@ -26,7 +26,7 @@ def run(csv_path: str, contracts: int = 3, stop_points: int = 30):
         for reentry in [False, True]:
             df_signals = strategy.generate_signals(df, reentry=reentry)
             trades, day_stats = simulate_trades(
-                df_signals, contracts=contracts, stop_points=stop_points
+                df_signals, contracts=contracts, stop_points=stop_points, rr_ratio=2.0
             )
             pf_report = simulate_lucid_flex(day_stats)
 
