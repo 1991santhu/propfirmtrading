@@ -1,94 +1,78 @@
 import sys
-import os
-from backtest.signals import load_csv, add_signals, filter_rth
+import pandas as pd
+from backtest.signals import load_csv, add_signals, add_key_levels, add_ema_clouds, filter_rth
 from backtest.simulator import simulate_trades
 from backtest.prop_firm import simulate_lucid_flex
+from backtest.strategies import ALL_STRATEGIES
+
 
 def run(csv_path: str, contracts: int = 3, stop_points: int = 30):
-    print(f"\nLoading data from: {csv_path}")
-    df = load_csv(csv_path)
-    df = filter_rth(df)
-    df = add_signals(df)
+    print(f"\nLoading data: {csv_path}")
+    df_raw = load_csv(csv_path)
+
+    # Add key levels BEFORE filtering to RTH (needs pre-market data)
+    df_raw = add_key_levels(df_raw)
+    df_raw = add_ema_clouds(df_raw)
+
+    # Filter to RTH for actual signal generation + trading
+    df = filter_rth(df_raw)
 
     print(f"Date range: {df.index[0]} -> {df.index[-1]}")
-    print(f"Total bars (RTH only): {len(df)}")
+    print(f"RTH bars: {len(df)}\n")
 
-    trades, day_stats = simulate_trades(df, contracts=contracts, stop_points=stop_points)
+    results = []
 
-    if not trades:
-        print("No trades generated.")
-        return
+    for strategy in ALL_STRATEGIES:
+        for reentry in [False, True]:
+            df_signals = strategy.generate_signals(df, reentry=reentry)
+            trades, day_stats = simulate_trades(
+                df_signals, contracts=contracts, stop_points=stop_points
+            )
+            pf_report = simulate_lucid_flex(day_stats)
 
-    # -- Trade stats --
-    total = len(trades)
-    wins  = [t for t in trades if t.pnl > 0]
-    losses = [t for t in trades if t.pnl < 0]
-    scratch = [t for t in trades if t.pnl == 0]
-    total_pnl = sum(t.pnl for t in trades)
+            total = len(trades)
+            wins  = sum(1 for t in trades if t.pnl > 0)
+            total_pnl = sum(t.pnl for t in trades)
+            evals_passed = sum(1 for e in pf_report.evals if e.passed)
+            stopped_days = sum(1 for d in day_stats if d.stopped_early)
 
-    print(f"\n{'='*50}")
-    print(f"  TRADE STATISTICS")
-    print(f"{'='*50}")
-    print(f"  Total trades    : {total}")
-    print(f"  Wins            : {len(wins)}  ({len(wins)/total*100:.1f}%)")
-    print(f"  Losses (SL)     : {len(losses)}  ({len(losses)/total*100:.1f}%)")
-    print(f"  Breakeven stops : {len(scratch)}")
-    print(f"  Total P&L       : ${total_pnl:,.2f}")
-    if wins:
-        print(f"  Avg win         : ${sum(t.pnl for t in wins)/len(wins):,.2f}")
-    else:
-        print(f"  Avg win         : N/A")
-    if losses:
-        print(f"  Avg loss        : ${sum(t.pnl for t in losses)/len(losses):,.2f}")
-    else:
-        print(f"  Avg loss        : N/A")
-    by_reason = {}
-    for t in trades:
-        by_reason[t.exit_reason] = by_reason.get(t.exit_reason, 0) + 1
-    print(f"  Exit reasons    : {by_reason}")
+            results.append({
+                'strategy': strategy.name,
+                'reentry': 'Yes' if reentry else 'No',
+                'trades': total,
+                'win_pct': f"{wins/total*100:.1f}%" if total > 0 else "N/A",
+                'pnl': f"${total_pnl:,.0f}",
+                'evals': f"{evals_passed}/{len(pf_report.evals)}",
+                'payouts': f"${pf_report.total_payouts:,.0f}",
+                'net': f"${pf_report.net_profit:,.0f}",
+                'stopped_days': stopped_days,
+            })
 
-    # -- Day stats --
-    trading_days = [d for d in day_stats if d.trades > 0]
-    stopped_days = [d for d in day_stats if d.stopped_early]
-    print(f"\n{'='*50}")
-    print(f"  DAY STATISTICS")
-    print(f"{'='*50}")
-    print(f"  Trading days    : {len(trading_days)}")
-    print(f"  Days stopped early (2-loss limit): {len(stopped_days)}")
-    print(f"  Avg trades/day  : {total/max(len(trading_days),1):.1f}")
+    # Print comparison table
+    print("=" * 100)
+    print(f"  STRATEGY COMPARISON  ({contracts} contracts, {stop_points}-pt stop)")
+    print("=" * 100)
+    header = f"{'Strategy':<30} {'Re-entry':<10} {'Trades':<8} {'Win%':<7} {'P&L':<10} {'Evals':<8} {'Payouts':<10} {'Net':<10} {'Stop Days'}"
+    print(header)
+    print("-" * 100)
+    for r in results:
+        print(
+            f"{r['strategy']:<30} {r['reentry']:<10} {r['trades']:<8} "
+            f"{r['win_pct']:<7} {r['pnl']:<10} {r['evals']:<8} "
+            f"{r['payouts']:<10} {r['net']:<10} {r['stopped_days']}"
+        )
+    print("=" * 100)
 
-    # -- Prop firm simulation --
-    report = simulate_lucid_flex(day_stats)
+    # Best strategy by net profit
+    best = max(results, key=lambda r: float(r['net'].replace('$', '').replace(',', '')))
+    print(f"\n  Best: {best['strategy']} (re-entry={best['reentry']}) -> Net {best['net']}\n")
 
-    print(f"\n{'='*50}")
-    print(f"  LUCID FLEX 50K SIMULATION")
-    print(f"{'='*50}")
-    print(f"  Evals attempted : {len(report.evals)}")
-    evals_passed = [e for e in report.evals if e.passed]
-    evals_failed = [e for e in report.evals if not e.passed]
-    print(f"  Evals passed    : {len(evals_passed)}")
-    print(f"  Evals failed    : {len(evals_failed)}")
-    if evals_failed:
-        reasons = {}
-        for e in evals_failed:
-            reasons[e.fail_reason] = reasons.get(e.fail_reason, 0) + 1
-        print(f"  Fail reasons    : {reasons}")
-    print(f"  Total eval fees : ${report.total_eval_fees:,.2f}")
-    print(f"  Total payouts   : ${report.total_payouts:,.2f}")
-    print(f"  Net profit      : ${report.net_profit:,.2f}")
-    if report.payouts:
-        print(f"\n  Payout history:")
-        for p in report.payouts:
-            print(f"    Payout #{p.payout_number}: ${p.payout_amount:,.2f} (from ${p.gross_profit:,.2f} profit)")
-
-    print(f"\n{'='*50}\n")
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python -m backtest.run <path_to_csv> [contracts] [stop_points]")
-        print("Example: python -m backtest.run backtest/data/MNQ_5min.csv 3 30")
+        print("Usage: python -m backtest.run <csv_path> [contracts] [stop_points]")
         sys.exit(1)
     csv_path = sys.argv[1]
-    contracts = int(sys.argv[2]) if len(sys.argv) > 2 else 3
+    contracts   = int(sys.argv[2]) if len(sys.argv) > 2 else 3
     stop_points = int(sys.argv[3]) if len(sys.argv) > 3 else 30
     run(csv_path, contracts, stop_points)

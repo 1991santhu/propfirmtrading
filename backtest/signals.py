@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from datetime import time as dtime
 
 def load_csv(filepath: str) -> pd.DataFrame:
     """
@@ -16,6 +17,111 @@ def load_csv(filepath: str) -> pd.DataFrame:
         df = df.rename(columns={"vol": "volume"})
     return df[["open", "high", "low", "close", "volume"]].copy()
 
+def add_key_levels(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calculate key price levels for each bar and store them as columns.
+    Must be called before filter_rth() — needs pre-market data.
+
+    Adds columns (NaN if not yet available for that bar):
+    - orh: Opening Range High (max high 9:30-10:00 AM, valid after 10:00 AM)
+    - orl: Opening Range Low (min low 9:30-10:00 AM, valid after 10:00 AM)
+    - pdh: Previous Day High (RTH high of prior trading day)
+    - pdl: Previous Day Low (RTH low of prior trading day)
+    - pmh: Pre-Market High (4:00-9:30 AM high of current day)
+    - pml: Pre-Market Low (4:00-9:30 AM low of current day)
+    """
+    df = df.copy()
+    for col in ['orh', 'orl', 'pdh', 'pdl', 'pmh', 'pml']:
+        df[col] = np.nan
+
+    df['_date'] = df.index.date
+    dates = sorted(df['_date'].unique())
+
+    prev_rth_high = None
+    prev_rth_low = None
+
+    for date in dates:
+        day_mask = df['_date'] == date
+
+        # OR window: 9:30-10:00 AM (exclusive of 10:00)
+        or_mask = day_mask & (
+            pd.Series(df.index.time, index=df.index) >= dtime(9, 30)
+        ) & (
+            pd.Series(df.index.time, index=df.index) < dtime(10, 0)
+        )
+
+        # Post-OR RTH: 10:00 AM onwards (where OR levels are valid)
+        post_or_mask = day_mask & (
+            pd.Series(df.index.time, index=df.index) >= dtime(10, 0)
+        )
+
+        # Full RTH: 9:30-16:00
+        rth_mask = day_mask & (
+            pd.Series(df.index.time, index=df.index) >= dtime(9, 30)
+        ) & (
+            pd.Series(df.index.time, index=df.index) < dtime(16, 0)
+        )
+
+        # Pre-market: 4:00-9:30
+        pm_mask = day_mask & (
+            pd.Series(df.index.time, index=df.index) >= dtime(4, 0)
+        ) & (
+            pd.Series(df.index.time, index=df.index) < dtime(9, 30)
+        )
+
+        # OR levels (valid after 10:00 AM)
+        if or_mask.any():
+            orh = df.loc[or_mask, 'high'].max()
+            orl = df.loc[or_mask, 'low'].min()
+            df.loc[post_or_mask, 'orh'] = orh
+            df.loc[post_or_mask, 'orl'] = orl
+
+        # Previous day levels (valid all RTH)
+        if prev_rth_high is not None:
+            df.loc[rth_mask, 'pdh'] = prev_rth_high
+            df.loc[rth_mask, 'pdl'] = prev_rth_low
+
+        # Pre-market levels (valid all RTH)
+        if pm_mask.any():
+            df.loc[rth_mask, 'pmh'] = df.loc[pm_mask, 'high'].max()
+            df.loc[rth_mask, 'pml'] = df.loc[pm_mask, 'low'].min()
+
+        # Save RTH high/low for next day
+        if rth_mask.any():
+            prev_rth_high = df.loc[rth_mask, 'high'].max()
+            prev_rth_low  = df.loc[rth_mask, 'low'].min()
+
+    df = df.drop(columns=['_date'])
+    return df
+
+
+def add_ema_clouds(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add EMA cloud columns used by strategies as filters.
+    - ema8, ema9, ema5, ema12 (Cloud 1 & 2 — fast, entry signal)
+    - ema34, ema50 (Cloud 3 — slow, trend filter)
+    - cloud1_green, cloud2_green, cloud3_green
+    - both_green (Cloud1 & Cloud2), both_red (~Cloud1 & ~Cloud2)
+    """
+    df = df.copy()
+    src = (df['high'] + df['low']) / 2  # hl2
+
+    df['ema8']  = src.ewm(span=8,  adjust=False).mean()
+    df['ema9']  = src.ewm(span=9,  adjust=False).mean()
+    df['ema5']  = src.ewm(span=5,  adjust=False).mean()
+    df['ema12'] = src.ewm(span=12, adjust=False).mean()
+    df['ema34'] = src.ewm(span=34, adjust=False).mean()
+    df['ema50'] = src.ewm(span=50, adjust=False).mean()
+
+    df['cloud1_green'] = df['ema8']  > df['ema9']
+    df['cloud2_green'] = df['ema5']  > df['ema12']
+    df['cloud3_green'] = df['ema34'] > df['ema50']
+    df['both_green']   = df['cloud1_green'] & df['cloud2_green']
+    df['both_red']     = ~df['cloud1_green'] & ~df['cloud2_green']
+
+    return df
+
+
 def add_signals(df: pd.DataFrame) -> pd.DataFrame:
     """
     Add EMA columns and signal columns to dataframe.
@@ -23,32 +129,18 @@ def add_signals(df: pd.DataFrame) -> pd.DataFrame:
 
     Adds columns:
     - hl2: (high + low) / 2
-    - ema8, ema9, ema5, ema12
+    - ema8, ema9, ema5, ema12, ema34, ema50
     - cloud1_green: ema8 > ema9
     - cloud2_green: ema5 > ema12
+    - cloud3_green: ema34 > ema50
     - both_green: cloud1_green & cloud2_green
     - both_red: ~cloud1_green & ~cloud2_green
     - long_signal: both_green & ~both_green.shift(1)   (transition bar)
     - short_signal: both_red & ~both_red.shift(1)       (transition bar)
     """
-    df = df.copy()
-    df["hl2"] = (df["high"] + df["low"]) / 2
-
-    # EMA using pandas ewm — span=N gives same result as TradingView EMA(N)
-    df["ema8"]  = df["hl2"].ewm(span=8,  adjust=False).mean()
-    df["ema9"]  = df["hl2"].ewm(span=9,  adjust=False).mean()
-    df["ema5"]  = df["hl2"].ewm(span=5,  adjust=False).mean()
-    df["ema12"] = df["hl2"].ewm(span=12, adjust=False).mean()
-
-    df["cloud1_green"] = df["ema8"] > df["ema9"]
-    df["cloud2_green"] = df["ema5"] > df["ema12"]
-    df["both_green"]   = df["cloud1_green"] & df["cloud2_green"]
-    df["both_red"]     = ~df["cloud1_green"] & ~df["cloud2_green"]
-
-    # Transition bars only (first bar where condition becomes true)
-    df["long_signal"]  = df["both_green"] & ~df["both_green"].shift(1).fillna(False)
-    df["short_signal"] = df["both_red"]   & ~df["both_red"].shift(1).fillna(False)
-
+    df = add_ema_clouds(df)
+    df['long_signal']  = df['both_green'] & ~df['both_green'].shift(1).fillna(False)
+    df['short_signal'] = df['both_red']   & ~df['both_red'].shift(1).fillna(False)
     return df
 
 def filter_rth(df: pd.DataFrame, tz: str = "America/New_York") -> pd.DataFrame:
