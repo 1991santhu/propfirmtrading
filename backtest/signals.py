@@ -95,6 +95,37 @@ def add_key_levels(df: pd.DataFrame) -> pd.DataFrame:
             prev_rth_close = df.loc[rth_mask, 'close'].iloc[-1]
 
     df = df.drop(columns=['_date'])
+
+    # --- ATR (14-period on 5-min bars) ---
+    # True range: max(high-low, |high-prev_close|, |low-prev_close|)
+    prev_close  = df['close'].shift(1)
+    tr          = pd.concat([
+        df['high'] - df['low'],
+        (df['high'] - prev_close).abs(),
+        (df['low']  - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    df['atr14'] = tr.ewm(span=14, adjust=False).mean()
+
+    # --- Previous day RTH range (high-low) --- used for range filter
+    # Already have pdh/pdl, so:
+    df['prev_day_range'] = df['pdh'] - df['pdl']
+
+    # --- Daily trend filter: 20-day SMA of daily closes ---
+    # Use last bar of each calendar day as EOD close, resample to daily
+    daily_close = df['close'].resample('1D').last().dropna()
+    if len(daily_close) >= 5:
+        daily_sma20 = daily_close.rolling(20, min_periods=5).mean()
+        # Shift by 1 day so today's bars see yesterday's SMA (no lookahead)
+        daily_sma20_shifted = daily_sma20.shift(1)
+        # Map each bar's date to the SMA value
+        df['daily_sma20'] = df.index.normalize().map(
+            lambda d: daily_sma20_shifted.asof(d) if len(daily_sma20_shifted) > 0 else float('nan')
+        )
+    else:
+        df['daily_sma20'] = float('nan')
+    # Trend: True = bullish (price above SMA → prefer longs)
+    df['daily_trend_up'] = df['close'] > df['daily_sma20']
+
     return df
 
 

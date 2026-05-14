@@ -17,8 +17,18 @@ class PayoutResult:
     payout_amount: float  # 90% of profit, capped at $2000
 
 @dataclass
+class FundedResult:
+    funded_number: int
+    days_traded: int
+    qualifying_days: int
+    payout_cycles: int
+    total_profit: float
+    blown: bool
+
+@dataclass
 class PropFirmReport:
     evals: List[EvalResult] = field(default_factory=list)
+    funded: List[FundedResult] = field(default_factory=list)
     payouts: List[PayoutResult] = field(default_factory=list)
     total_eval_fees: float = 0.0
     total_payouts: float = 0.0
@@ -106,19 +116,25 @@ def simulate_lucid_flex(
         qualifying_days = 0
         payout_cycle_days = 0
         funded_peak = 0.0
+        funded_days_total = 0
+        funded_payout_cycles = 0
+        funded_blown = False
+        funded_profit_total = 0.0
 
         while day_index < total_days:
             day = day_stats[day_index]
             day_index += 1
             payout_cycle_days += 1
+            funded_days_total += 1
 
             funded_cumulative += day.pnl
+            funded_profit_total += day.pnl
             if funded_cumulative > funded_peak:
                 funded_peak = funded_cumulative
 
             # Drawdown check on funded (EOD trailing from peak)
             if funded_peak - funded_cumulative >= max_eod_drawdown:
-                # Blown funded account -- restart with new eval
+                funded_blown = True
                 break
 
             # Count qualifying payout days
@@ -128,6 +144,7 @@ def simulate_lucid_flex(
             # Payout trigger
             if qualifying_days >= min_payout_days and funded_cumulative > 0:
                 payout_number += 1
+                funded_payout_cycles += 1
                 gross = funded_cumulative
                 payout_amount = min(gross * payout_split, max_payout)
                 report.payouts.append(PayoutResult(
@@ -141,6 +158,15 @@ def simulate_lucid_flex(
                 funded_peak = 0.0
                 qualifying_days = 0
                 payout_cycle_days = 0
+
+        report.funded.append(FundedResult(
+            funded_number=eval_number,
+            days_traded=funded_days_total,
+            qualifying_days=qualifying_days,
+            payout_cycles=funded_payout_cycles,
+            total_profit=round(funded_profit_total, 2),
+            blown=funded_blown,
+        ))
 
     report.net_profit = round(report.total_payouts - report.total_eval_fees, 2)
     return report

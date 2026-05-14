@@ -12,3 +12,9 @@ pydantic==2.13.4
 pandas>=2.2.2
 numpy>=1.26.4
 yfinance==0.2.54
+# Historical data (backtest only — databento for 2yr MNQ)
+databento>=0.78
+# Research scraper (standalone module)
+praw>=7.7
+beautifulsoup4>=4.12
+requests>=2.31

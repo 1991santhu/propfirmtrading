@@ -1,23 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(pip install *)",
-      "Bash(pip install)",
-      "Bash(source venv/bin/activate *)",
-      "Bash(pytest *)",
-      "Bash(pytest)",
-      "Bash(python3 -m venv *)",
-      "Bash(git init *)",
-      "Bash(git init)",
-      "Bash(git add *)",
-      "Bash(git commit *)",
-      "Bash(git log *)",
-      "Bash(mkdir *)",
-      "Bash(mkdir)",
-      "Bash(curl *)",
-      "Bash(cp *)",
-      "Bash(mv *)",
-      "Bash(rm *)"
+      "Bash(*)",
+      "Edit(*)",
+      "Write(*)",
+      "Read(*)",
+      "MultiEdit(*)"
     ]
   }
 }

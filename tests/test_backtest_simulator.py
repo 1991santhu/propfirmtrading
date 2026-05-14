@@ -33,7 +33,7 @@ def test_tp_hit_long():
     df = make_signal_df(long_at=0, prices=prices, n=50)
     df["high"] = highs
     df["low"] = lows
-    trades, _ = simulate_trades(df, contracts=3, stop_points=stop)
+    trades, _ = simulate_trades(df, contracts=3, stop_points=stop, commission_per_side=0)
     assert len(trades) == 1
     assert trades[0].exit_reason == "tp"
     assert trades[0].pnl == stop * 2 * 3 * 2  # 60 pts x 3 contracts x $2
@@ -46,10 +46,82 @@ def test_sl_hit_long():
     df = make_signal_df(long_at=0, prices=prices, n=50)
     df["high"] = prices
     df["low"] = prices
-    trades, _ = simulate_trades(df, contracts=3, stop_points=stop)
+    trades, _ = simulate_trades(df, contracts=3, stop_points=stop, commission_per_side=0)
     assert len(trades) == 1
     assert trades[0].exit_reason == "sl"
     assert trades[0].pnl == -stop * 3 * 2  # -$180
+
+def test_be_buffer_long():
+    """After 1R hit, stop moves to entry + be_buffer; if price reverses, exits at that level."""
+    entry = 20000.0
+    stop  = 30          # SL at 19970, 1R at 20030, TP at 20060
+    buf   = 10          # BE stop at 20010 (entry + 10)
+    n = 20
+    closes = [entry] * n
+    # Bar 0: signal; bar 1: price goes to 20031 (triggers BE move); bar 2: price falls to 20010 (BE stop hit)
+    highs = [entry] * n
+    lows  = [entry] * n
+    highs[1] = entry + stop + 1   # triggers 1R → BE move
+    lows[2]  = entry + buf - 1    # falls below BE stop (entry+10)
+
+    df = make_signal_df(long_at=0, n=n)
+    df["high"] = highs
+    df["low"]  = lows
+    df["close"] = closes
+
+    trades, _ = simulate_trades(df, contracts=1, stop_points=stop, be_buffer_points=buf, commission_per_side=0)
+    assert len(trades) == 1
+    t = trades[0]
+    assert t.exit_reason == "be_stop"
+    assert t.pnl == buf * 1 * 2  # 10 pts × 1 contract × $2 = $20 profit
+
+
+def test_be_buffer_short():
+    """Short: after 1R hit, stop moves to entry - be_buffer; reversal exits at small profit."""
+    entry = 20000.0
+    stop  = 30          # SL at 20030, 1R at 19970, TP at 19940
+    buf   = 10          # BE stop at 19990 (entry - 10)
+    n = 20
+    closes = [entry] * n
+    highs = [entry] * n
+    lows  = [entry] * n
+    lows[1]  = entry - stop - 1   # triggers 1R → BE move for short
+    highs[2] = entry - buf + 1    # rallies above BE stop (entry-10)
+
+    df = make_signal_df(short_at=0, n=n)
+    df["high"] = highs
+    df["low"]  = lows
+    df["close"] = closes
+
+    trades, _ = simulate_trades(df, contracts=1, stop_points=stop, be_buffer_points=buf, commission_per_side=0)
+    assert len(trades) == 1
+    t = trades[0]
+    assert t.exit_reason == "be_stop"
+    assert t.pnl == buf * 1 * 2  # 10 pts × 1 contract × $2 = $20 profit
+
+
+def test_be_buffer_zero_is_breakeven():
+    """be_buffer_points=0 means exact breakeven — BE stop gives $0 P&L."""
+    entry = 20000.0
+    stop  = 30
+    n = 20
+    closes = [entry] * n
+    highs = [entry] * n
+    lows  = [entry] * n
+    highs[1] = entry + stop + 1   # triggers 1R → BE move
+    lows[2]  = entry - 1          # falls to exactly below entry
+
+    df = make_signal_df(long_at=0, n=n)
+    df["high"] = highs
+    df["low"]  = lows
+    df["close"] = closes
+
+    trades, _ = simulate_trades(df, contracts=1, stop_points=stop, be_buffer_points=0, commission_per_side=0)
+    assert len(trades) == 1
+    t = trades[0]
+    assert t.exit_reason == "be_stop"
+    assert t.pnl == 0.0
+
 
 def test_daily_loss_limit_stops_trading():
     """After 2 losses, no more trades taken."""
@@ -81,7 +153,7 @@ def test_daily_loss_limit_stops_trading():
     df["high"] = highs
     df["low"] = lows
 
-    trades, day_stats = simulate_trades(df, contracts=3, stop_points=stop, max_daily_losses=2)
+    trades, day_stats = simulate_trades(df, contracts=3, stop_points=stop, max_daily_losses=2, commission_per_side=0)
     # Only 2 stop-loss trades taken (3rd signal ignored after 2 losses)
     sl_trades = [t for t in trades if t.exit_reason == "sl"]
     assert len(sl_trades) == 2

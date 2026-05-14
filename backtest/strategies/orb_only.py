@@ -8,7 +8,7 @@ class ORBOnlyStrategy(BaseStrategy):
     def generate_signals(self, df: pd.DataFrame, reentry: bool = False) -> pd.DataFrame:
         return self._level_break_signals(
             df,
-            long_levels=['orh', 'pdc'],
-            short_levels=['orl', 'pdc'],
+            long_levels=['orh'],
+            short_levels=['orl'],
             reentry=reentry,
         )
