@@ -10,7 +10,7 @@ from backtest.strategies.premarket_only import PreMarketOnlyStrategy
 from backtest.strategies.breakout_retest_ema import BreakoutRetestEMAStrategy
 from backtest.strategies.breakout_retest_trend_ema import BreakoutRetestTrendEMAStrategy
 from backtest.strategies.orb_retest import ORBRetestStrategy
-from backtest.strategies.orb_retest_key_levels import ORBRetestKeyLevelsStrategy
+from backtest.strategies.orb_retest_key_levels import ORBRetestCloudFlipStrategy
 
 # Removed: H (Morning Only), I (Afternoon Only), L (ORB+Cloud3), M (B+R+Trend)
 ALL_STRATEGIES = [
@@ -26,5 +26,5 @@ ALL_STRATEGIES = [
     BreakoutRetestEMAStrategy(),        # N
     BreakoutRetestTrendEMAStrategy(),   # O
     ORBRetestStrategy(),                # P: ORB breakout + retest
-    ORBRetestKeyLevelsStrategy(),       # Q: ORB retest + simple key levels
+    ORBRetestCloudFlipStrategy(),        # Q: Cloud Flip + ORB Retest (F+P)
 ]

@@ -1,40 +1,44 @@
 """
-Strategy Q: ORB Retest + Key Levels
+Strategy Q: Cloud Flip Near Key Level + ORB Retest (F + P combined)
 
-Hybrid of P and B:
-  - ORH/ORL: 3-state machine (breakout → retest → re-break) from P — high quality
-  - PDH/PDL/PMH/PML/PDC: simple close-crosses-level from B — more signals
+Takes the union of two signal sources:
+  - F: cloud flip (both_green/both_red just turned on) within 30pt of any key level
+  - P: ORH/ORL 3-state machine (breakout → retest → re-break)
 
-Rationale: ORH/ORL retest signals are the highest quality because the opening range
-is a fresh, intraday-derived level with strong crowd attention. PDH/PDL etc. are
-weaker individually but add useful signal volume to fill out the day.
+Rationale: F fires on momentum confirmation at structure; P fires on high-quality
+ORB breakout/retest. Together they cover both intraday momentum and opening-range
+continuation without duplicating each other's logic.
+
+allows_early_entry=True inherited from the cloud flip component (F fires pre-10AM).
 """
 from backtest.strategies.breakout_retest import BreakoutRetestStrategy
 import pandas as pd
 
 
-class ORBRetestKeyLevelsStrategy(BreakoutRetestStrategy):
-    name = "Q: ORB Retest + Key Levels"
+class ORBRetestCloudFlipStrategy(BreakoutRetestStrategy):
+    name = "Q: Cloud Flip + ORB Retest"
+    proximity_points: int = 30
+    allows_early_entry = True
 
-    # Simple key levels handled with B-style logic (no retest required)
-    _kl_long  = ['pdh', 'pmh', 'pdc']
-    _kl_short = ['pdl', 'pml', 'pdc']
+    _cloud_long_levels  = ['orh', 'pdh', 'pmh', 'pdc']
+    _cloud_short_levels = ['orl', 'pdl', 'pml', 'pdc']
 
     def generate_signals(self, df: pd.DataFrame, reentry: bool = False) -> pd.DataFrame:
         df = df.copy()
         df['long_signal']  = False
         df['short_signal'] = False
+
+        # ── F component: cloud flip transitions ───────────────────────
+        cloud_long  = df['both_green'] & ~df['both_green'].shift(1).fillna(False)
+        cloud_short = df['both_red']   & ~df['both_red'].shift(1).fillna(False)
+
         df['_date'] = df.index.date
 
         for date, day_df in df.groupby('_date'):
-            # ── ORH/ORL: 3-state machine ─────────────────────────────────
+            # ── P component: ORH/ORL 3-state machine ──────────────────
             long_state  = 'watching'
             short_state = 'watching'
             prev_close  = None
-
-            # ── PDH/PDL/PMH/PML/PDC: simple level-break (one fire per level) ─
-            used_long_kl  = set()
-            used_short_kl = set()
 
             for ts, row in day_df.iterrows():
                 orh = row.get('orh')
@@ -66,29 +70,20 @@ class ORBRetestKeyLevelsStrategy(BreakoutRetestStrategy):
                             df.loc[ts, 'short_signal'] = True
                             short_state = 'armed' if reentry else 'done'
 
-                # Simple key-level breaks (long)
-                for lvl_col in self._kl_long:
-                    if not reentry and lvl_col in used_long_kl:
-                        continue
-                    lvl = row.get(lvl_col)
-                    if pd.isna(lvl):
-                        continue
-                    if prev_close is not None and prev_close < lvl <= row['close']:
-                        df.loc[ts, 'long_signal'] = True
-                        if not reentry:
-                            used_long_kl.add(lvl_col)
+                # F component: cloud flip near key level
+                if cloud_long.loc[ts]:
+                    for lvl_col in self._cloud_long_levels:
+                        lvl = row.get(lvl_col)
+                        if not pd.isna(lvl) and abs(row['close'] - lvl) <= self.proximity_points:
+                            df.loc[ts, 'long_signal'] = True
+                            break
 
-                # Simple key-level breaks (short)
-                for lvl_col in self._kl_short:
-                    if not reentry and lvl_col in used_short_kl:
-                        continue
-                    lvl = row.get(lvl_col)
-                    if pd.isna(lvl):
-                        continue
-                    if prev_close is not None and prev_close > lvl >= row['close']:
-                        df.loc[ts, 'short_signal'] = True
-                        if not reentry:
-                            used_short_kl.add(lvl_col)
+                if cloud_short.loc[ts]:
+                    for lvl_col in self._cloud_short_levels:
+                        lvl = row.get(lvl_col)
+                        if not pd.isna(lvl) and abs(row['close'] - lvl) <= self.proximity_points:
+                            df.loc[ts, 'short_signal'] = True
+                            break
 
                 prev_close = row['close']
 
