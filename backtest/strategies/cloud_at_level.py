@@ -6,6 +6,7 @@ import numpy as np
 class CloudAtLevelStrategy(BaseStrategy):
     name = "F: Cloud Flip Near Key Level"
     proximity_points: int = 30  # within 1R of a key level
+    allows_early_entry = True
 
     def generate_signals(self, df: pd.DataFrame, reentry: bool = False) -> pd.DataFrame:
         df = df.copy()

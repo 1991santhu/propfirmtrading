@@ -4,6 +4,7 @@ import pandas as pd
 
 class KLCloud12Strategy(BaseStrategy):
     name = "C: Key Levels + Cloud 1&2"
+    allows_early_entry = True
 
     def generate_signals(self, df: pd.DataFrame, reentry: bool = False) -> pd.DataFrame:
         return self._level_break_signals(

@@ -4,6 +4,7 @@ import pandas as pd
 
 class BaseStrategy(ABC):
     name: str = "Base"
+    allows_early_entry: bool = False  # if True, signals may fire before 10:00 AM ET
 
     @abstractmethod
     def generate_signals(self, df: pd.DataFrame, reentry: bool = False) -> pd.DataFrame:

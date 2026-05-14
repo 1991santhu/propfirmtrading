@@ -4,6 +4,7 @@ import pandas as pd
 
 class KLAllCloudsStrategy(BaseStrategy):
     name = "E: Key Levels + All Clouds"
+    allows_early_entry = True
 
     def generate_signals(self, df: pd.DataFrame, reentry: bool = False) -> pd.DataFrame:
         all_green = df['both_green'] & df['cloud3_green']
