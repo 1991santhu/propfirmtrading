@@ -160,11 +160,12 @@ def run_study(
     reentry_modes: list[bool] | None = None,
     save_report: bool = True,
 ) -> None:
-    # Defaults — if neither stop list given, use 60pt fixed
+    # Defaults — use 0.20% of entry price if no stop specified
+    # This keeps risk comparable across price eras (MNQ 14k→29k)
     rr_ratios       = rr_ratios       or [1.5, 2.0]
     be_buffers      = be_buffers      or [0, 10]
     if not stop_pts_list and not stop_pct_list:
-        stop_pts_list = [60]
+        stop_pct_list = [0.20]
     stop_pts_list   = stop_pts_list   or []
     stop_pct_list   = stop_pct_list   or []
     max_trades_list = max_trades_list or [5]
