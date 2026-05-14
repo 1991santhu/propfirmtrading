@@ -29,6 +29,34 @@ class DayStats:
     pnl: float = 0.0
     stopped_early: bool = False  # hit daily loss limit
 
+
+def _compute_stop(
+    side: str,
+    entry: float,
+    stop_pts: float,
+    be_stage: int,
+    be_buffer_points: int,
+    ladder: list,   # list of (trigger_r, lock_r)
+    use_ladder: bool,
+) -> float:
+    """Return the current protective stop price given trade state."""
+    if be_stage == 0:
+        # No BE move yet — initial hard stop
+        return entry - stop_pts if side == "long" else entry + stop_pts
+
+    if use_ladder:
+        # Lock-in level from the last reached ladder step
+        _, lock_r = ladder[be_stage - 1]
+        if side == "long":
+            return entry + lock_r * stop_pts
+        return entry - lock_r * stop_pts
+    else:
+        # Legacy be_buffer_points: stop at entry ± buffer
+        if side == "long":
+            return entry + be_buffer_points
+        return entry - be_buffer_points
+
+
 def simulate_trades(
     df: pd.DataFrame,
     contracts: int = 3,
@@ -39,6 +67,15 @@ def simulate_trades(
     max_daily_trades: int = 5,
     rr_ratio: float = 2.0,            # R:R multiplier for take profit
     be_buffer_points: int = 0,        # after hitting 1R, stop moves to entry + this many points
+    be_ladder: list[tuple[float, float]] | None = None,
+    # Tiered stop ladder — overrides be_buffer_points when set.
+    # Each entry is (trigger_r, lock_r):
+    #   trigger_r — when price profit reaches this multiple of R, advance stage
+    #   lock_r    — stop moves to entry + lock_r * stop (long) or entry - lock_r * stop (short)
+    # Example: [(1.0, 0.5), (1.5, 1.0)]
+    #   At 1R profit  → stop moves to entry + 0.5R  (lock half the first R)
+    #   At 1.5R profit → stop moves to entry + 1.0R (lock full first R)
+    # Entries must be sorted by trigger_r ascending. All lock_r values must be ≥ 0.
     commission_per_side: float = 0.59, # $ per contract per side (Tradovate all-in ~$0.59)
     min_range_pts: float = 0,          # skip day if prev_day_range < this (range filter)
     no_first_30min: bool = False,      # if True, skip all entries before 10:00 AM ET
@@ -49,49 +86,35 @@ def simulate_trades(
     Simulate all trades from signal dataframe.
 
     Stop sizing (pick one):
-      stop_points  — fixed absolute points, e.g. 60. Simple but not comparable across
-                     price eras (14k MNQ vs 29k MNQ). Use only for current-era testing.
-      stop_pct     — percentage of entry price, e.g. 0.20 → 40pts at 20k, 58pts at 29k.
-                     Use this for multi-year backtests so results are era-comparable.
+      stop_points  — fixed absolute points, e.g. 60. Not era-comparable.
+      stop_pct     — percentage of entry price, e.g. 0.20 → 58pts at 29k MNQ.
+                     Preferred for multi-year backtests.
 
-    Commissions: commission_per_side × contracts × 2 (entry + exit) deducted from each trade.
-      Tradovate all-in for MNQ: ~$0.59/contract/side (exchange + clearing + NFA + platform).
-      Set to 0 to disable.
-
-    Range filter: min_range_pts skips an entire trading day if the previous day's RTH
-      high-low range was below this threshold. On low-range days, a 60pt stop + 120pt TP
-      physically cannot both fit within the day's expected range.
-      Recommended: 150 pts (= 2.5× stop at 60pt). Set 0 to disable.
-
-    be_buffer_points=0  → stop moves to exact entry ($0 if stopped at BE)
-    be_buffer_points=10 → stop moves to entry+10pts (lock in small profit at 1R)
-
-    no_first_30min=True → blocks all new entries before 10:00 AM ET. The opening
-      30 minutes (9:30-10:00) form the Opening Range and are highly volatile —
-      signals fired here are frequently whipsawed within 1-2 bars.
-
-    cloud_flip_exit=True → if in a long and the EMA cloud flips to both_red, exit
-      at the bar close ONLY if that close is better than the hard SL (i.e. we're
-      cutting the loss smaller, not adding to it). Same logic inverted for shorts.
-      Requires both_green/both_red columns in df (from add_ema_clouds).
+    BE / stop ladder (pick one):
+      be_buffer_points — legacy single-step: at 1R, stop moves to entry ± N pts.
+      be_ladder        — tiered R-based ladder (see parameter docs above).
+                         Takes priority over be_buffer_points when set.
 
     Returns (trades, day_stats).
     """
     trades: List[Trade] = []
     day_stats: List[DayStats] = []
 
-    # Group by date
+    # Prepare ladder
+    use_ladder = be_ladder is not None
+    sorted_ladder = sorted(be_ladder, key=lambda x: x[0]) if be_ladder else []
+    # For legacy mode, synthesise a 1-step ladder equivalent to be_buffer_points
+    # so the loop logic is unified. We still track via be_stage.
+
     df = df.copy()
     df["date"] = df.index.date
-
     commission_rt = commission_per_side * 2  # round-trip cost per contract
 
     for date, day_df in df.groupby("date"):
-        # Daily range filter: skip day if previous day range was too small
         if min_range_pts > 0 and "prev_day_range" in day_df.columns:
             prev_range = day_df["prev_day_range"].iloc[0]
             if not pd.isna(prev_range) and prev_range < min_range_pts:
-                day_stats.append(DayStats(date=str(date)))  # record as empty day
+                day_stats.append(DayStats(date=str(date)))
                 continue
 
         day = DayStats(date=str(date))
@@ -99,147 +122,141 @@ def simulate_trades(
         entry_price = 0.0
         entry_time = None
         side = ""
-        be_moved = False
-        trade_stop_pts: float = stop_points  # actual stop used for this trade
+        be_stage = 0            # 0 = initial stop; N = Nth ladder step reached
+        trade_stop_pts: float = stop_points
 
         for ts, row in day_df.iterrows():
             if in_position:
-                comm = commission_rt * contracts  # total round-trip commission this trade
+                comm = commission_rt * contracts
+                tp_price = (entry_price + trade_stop_pts * rr_ratio
+                            if side == "long"
+                            else entry_price - trade_stop_pts * rr_ratio)
 
-                if side == "long":
-                    current_stop = entry_price + be_buffer_points if be_moved else entry_price - trade_stop_pts
-                    tp_price = entry_price + trade_stop_pts * rr_ratio
-                    be_trigger = entry_price + trade_stop_pts * 1.0
+                current_stop = _compute_stop(
+                    side, entry_price, trade_stop_pts,
+                    be_stage, be_buffer_points, sorted_ladder, use_ladder,
+                )
 
-                    if row["high"] >= tp_price:
-                        exit_price = tp_price
-                        pnl = (exit_price - entry_price) * contracts * point_value - comm
-                        trades.append(Trade(entry_time, ts, "long", entry_price, exit_price,
-                                           contracts, trade_stop_pts, "tp", pnl))
+                # ── Advance ladder stage ──────────────────────────────────
+                if use_ladder:
+                    while be_stage < len(sorted_ladder):
+                        trigger_r, _ = sorted_ladder[be_stage]
+                        trigger_price = (entry_price + trigger_r * trade_stop_pts
+                                         if side == "long"
+                                         else entry_price - trigger_r * trade_stop_pts)
+                        if (side == "long" and row["high"] >= trigger_price) or \
+                           (side == "short" and row["low"] <= trigger_price):
+                            be_stage += 1
+                            # Recompute stop after advancing
+                            current_stop = _compute_stop(
+                                side, entry_price, trade_stop_pts,
+                                be_stage, be_buffer_points, sorted_ladder, use_ladder,
+                            )
+                        else:
+                            break
+                else:
+                    # Legacy: single BE move at 1R
+                    if be_stage == 0:
+                        be_trigger = (entry_price + trade_stop_pts
+                                      if side == "long"
+                                      else entry_price - trade_stop_pts)
+                        if (side == "long" and row["high"] >= be_trigger) or \
+                           (side == "short" and row["low"] <= be_trigger):
+                            be_stage = 1
+                            current_stop = _compute_stop(
+                                side, entry_price, trade_stop_pts,
+                                be_stage, be_buffer_points, sorted_ladder, use_ladder,
+                            )
+
+                # ── Take profit ───────────────────────────────────────────
+                tp_hit = (row["high"] >= tp_price if side == "long"
+                          else row["low"] <= tp_price)
+                if tp_hit:
+                    exit_price = tp_price
+                    pnl = ((exit_price - entry_price if side == "long"
+                            else entry_price - exit_price)
+                           * contracts * point_value - comm)
+                    trades.append(Trade(entry_time, ts, side, entry_price, exit_price,
+                                       contracts, trade_stop_pts, "tp", pnl))
+                    day.pnl += pnl
+                    day.trades += 1
+                    in_position = False
+                    be_stage = 0
+                    continue
+
+                # ── Stop loss / BE stop ───────────────────────────────────
+                sl_hit = (row["low"] <= current_stop if side == "long"
+                          else row["high"] >= current_stop)
+                if sl_hit:
+                    exit_price = current_stop
+                    pnl = ((exit_price - entry_price if side == "long"
+                            else entry_price - exit_price)
+                           * contracts * point_value - comm)
+                    reason = "be_stop" if be_stage > 0 else "sl"
+                    trades.append(Trade(entry_time, ts, side, entry_price, exit_price,
+                                       contracts, trade_stop_pts, reason, pnl))
+                    day.pnl += pnl
+                    day.trades += 1
+                    if be_stage == 0:          # only a full SL counts as a daily loss
+                        day.losses += 1
+                    in_position = False
+                    be_stage = 0
+                    continue
+
+                # ── Cloud-flip early exit ─────────────────────────────────
+                if cloud_flip_exit and be_stage == 0:
+                    flip = (row.get("both_red", False) if side == "long"
+                            else row.get("both_green", False))
+                    exit_better = (row["close"] > current_stop if side == "long"
+                                   else row["close"] < current_stop)
+                    if flip and exit_better:
+                        exit_price = row["close"]
+                        pnl = ((exit_price - entry_price if side == "long"
+                                else entry_price - exit_price)
+                               * contracts * point_value - comm)
+                        trades.append(Trade(entry_time, ts, side, entry_price, exit_price,
+                                           contracts, trade_stop_pts, "cloud_flip", pnl))
                         day.pnl += pnl
                         day.trades += 1
-                        in_position = False
-                        be_moved = False
-                        continue
-
-                    if row["low"] <= current_stop:
-                        exit_price = current_stop
-                        pnl = (exit_price - entry_price) * contracts * point_value - comm
-                        reason = "be_stop" if be_moved else "sl"
-                        trades.append(Trade(entry_time, ts, "long", entry_price, exit_price,
-                                           contracts, trade_stop_pts, reason, pnl))
-                        day.pnl += pnl
-                        day.trades += 1
-                        if not be_moved:
+                        if pnl < 0:
                             day.losses += 1
                         in_position = False
-                        be_moved = False
+                        be_stage = 0
                         continue
 
-                    if not be_moved and row["high"] >= be_trigger:
-                        be_moved = True
-
-                    # Cloud-flip early exit: clouds turned bearish while we're long
-                    # Only exit if close is still above SL (cutting loss smaller, not adding)
-                    if cloud_flip_exit and not be_moved:
-                        if row.get("both_red", False) and row["close"] > current_stop:
-                            exit_price = row["close"]
-                            pnl = (exit_price - entry_price) * contracts * point_value - comm
-                            trades.append(Trade(entry_time, ts, "long", entry_price, exit_price,
-                                               contracts, trade_stop_pts, "cloud_flip", pnl))
-                            day.pnl += pnl
-                            day.trades += 1
-                            if pnl < 0:
-                                day.losses += 1
-                            in_position = False
-                            be_moved = False
-                            continue
-
-                else:  # short
-                    current_stop = entry_price - be_buffer_points if be_moved else entry_price + trade_stop_pts
-                    tp_price = entry_price - trade_stop_pts * rr_ratio
-                    be_trigger = entry_price - trade_stop_pts * 1.0
-
-                    if row["low"] <= tp_price:
-                        exit_price = tp_price
-                        pnl = (entry_price - exit_price) * contracts * point_value - comm
-                        trades.append(Trade(entry_time, ts, "short", entry_price, exit_price,
-                                           contracts, trade_stop_pts, "tp", pnl))
-                        day.pnl += pnl
-                        day.trades += 1
-                        in_position = False
-                        be_moved = False
-                        continue
-
-                    if row["high"] >= current_stop:
-                        exit_price = current_stop
-                        pnl = (entry_price - exit_price) * contracts * point_value - comm
-                        reason = "be_stop" if be_moved else "sl"
-                        trades.append(Trade(entry_time, ts, "short", entry_price, exit_price,
-                                           contracts, trade_stop_pts, reason, pnl))
-                        day.pnl += pnl
-                        day.trades += 1
-                        if not be_moved:
-                            day.losses += 1
-                        in_position = False
-                        be_moved = False
-                        continue
-
-                    if not be_moved and row["low"] <= be_trigger:
-                        be_moved = True
-
-                    # Cloud-flip early exit: clouds turned bullish while we're short
-                    if cloud_flip_exit and not be_moved:
-                        if row.get("both_green", False) and row["close"] < current_stop:
-                            exit_price = row["close"]
-                            pnl = (entry_price - exit_price) * contracts * point_value - comm
-                            trades.append(Trade(entry_time, ts, "short", entry_price, exit_price,
-                                               contracts, trade_stop_pts, "cloud_flip", pnl))
-                            day.pnl += pnl
-                            day.trades += 1
-                            if pnl < 0:
-                                day.losses += 1
-                            in_position = False
-                            be_moved = False
-                            continue
-
-            # Check if we should stop trading today
+            # ── Daily limits ──────────────────────────────────────────────
             if day.losses >= max_daily_losses:
                 day.stopped_early = True
                 break
             if day.trades >= max_daily_trades:
                 break
 
-            # New entry on signal
+            # ── New entry ─────────────────────────────────────────────────
             if not in_position:
-                # No-first-30min rule: skip entries before 10:00 AM
                 if no_first_30min and ts.time() < dtime(10, 0):
                     continue
-
-                if row["long_signal"]:
+                signal = ("long" if row["long_signal"]
+                          else "short" if row["short_signal"]
+                          else None)
+                if signal:
                     in_position = True
                     entry_price = row["close"]
                     entry_time = ts
-                    side = "long"
-                    be_moved = False
-                    # Compute stop size: percentage takes priority over fixed points
-                    trade_stop_pts = round(entry_price * stop_pct / 100, 1) if stop_pct else stop_points
-                elif row["short_signal"]:
-                    in_position = True
-                    entry_price = row["close"]
-                    entry_time = ts
-                    side = "short"
-                    be_moved = False
-                    trade_stop_pts = round(entry_price * stop_pct / 100, 1) if stop_pct else stop_points
+                    side = signal
+                    be_stage = 0
+                    trade_stop_pts = (round(entry_price * stop_pct / 100, 1)
+                                      if stop_pct else stop_points)
 
-        # EOD: force close any open position
-        if in_position and day_df is not None and len(day_df) > 0:
+        # ── EOD close ────────────────────────────────────────────────────
+        if in_position and len(day_df) > 0:
             last_row = day_df.iloc[-1]
             exit_price = last_row["close"]
             comm = commission_rt * contracts
-            pnl = (exit_price - entry_price if side == "long" else entry_price - exit_price) * contracts * point_value - comm
-            trades.append(Trade(entry_time, day_df.index[-1], side, entry_price, exit_price,
-                               contracts, trade_stop_pts, "eod", pnl))
+            pnl = ((exit_price - entry_price if side == "long"
+                    else entry_price - exit_price)
+                   * contracts * point_value - comm)
+            trades.append(Trade(entry_time, day_df.index[-1], side, entry_price,
+                               exit_price, contracts, trade_stop_pts, "eod", pnl))
             day.pnl += pnl
             day.trades += 1
 
