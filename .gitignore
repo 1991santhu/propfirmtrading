@@ -5,3 +5,5 @@ __pycache__/
 logs/
 .pytest_cache/
 venv/
+backtest/data/
+.claude/settings.local.json
