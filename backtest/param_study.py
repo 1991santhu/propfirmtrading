@@ -30,7 +30,7 @@ import pandas as pd
 
 from backtest.signals import load_csv, add_key_levels, add_ema_clouds, filter_rth
 from backtest.simulator import simulate_trades, Trade, DayStats
-from backtest.prop_firm import simulate_lucid_flex
+from backtest.lucid_flex import simulate_lucid_flex
 from backtest.strategies import ALL_STRATEGIES
 
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "..", "docs", "backtest_results")
