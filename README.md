@@ -150,6 +150,22 @@ Do not paste API keys or tokens into AI chat or screenshots.
 
 ---
 
+## Git push
+
+Uses a repo-local credentials file (`.git/credentials-trading`) so work Keychain entries for `github.com` are not used.
+
+```bash
+cd /path/to/propfirm_trading
+git add .
+git commit -m "your message"
+git -c credential.helper= -c credential.helper='store --file=.git/credentials-trading' push origin master
+```
+
+One-time setup on a new machine: create `.git/credentials-trading` with one line  
+`https://1991santhu:YOUR_GITHUB_TOKEN@github.com` and `chmod 600` it. Do not commit this file.
+
+---
+
 ## Scaling to Multiple Accounts
 
 See `docs/scaling.md` for the horizontal scaling strategy (trade copiers across multiple funded accounts).
