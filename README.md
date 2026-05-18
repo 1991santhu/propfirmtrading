@@ -3,6 +3,8 @@
 Automated trading bot for LucidFlex 50k futures prop firm accounts.  
 Trades /MNQ (Micro Nasdaq) via Tradovate using TradingView webhook signals.
 
+**Private repo** — never commit `.env` (gitignored). Copy `.env.template` and fill in credentials locally.
+
 ## Architecture
 
 ```
@@ -134,6 +136,17 @@ Update `SYMBOL=` in `.env` before expiry:
 - MNQ**M**5 = June 2025
 - MNQ**U**5 = September 2025
 - MNQ**Z**5 = December 2025
+
+---
+
+## Security
+
+| File | Committed to Git? |
+|------|-------------------|
+| `.env` | No (gitignored) — Tradovate, Databento, Polygon keys |
+| `.git/credentials-trading` | No — optional local GitHub HTTPS auth (repo-only) |
+
+Do not paste API keys or tokens into AI chat or screenshots.
 
 ---
 
